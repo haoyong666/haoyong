@@ -1,72 +1,55 @@
 import requests
-import feedparser
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import os
 
-DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]  # 保留，未使用但防止报错
+# 配置（从 GitHub Secrets 读取）
 SEND_EMAIL = os.environ["SEND_EMAIL"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 RECEIVE_EMAIL = os.environ["RECEIVE_EMAIL"]
 
-def fetch_bing_news(query, count=15):
-    """从 Bing News RSS 获取最新新闻，不做任何时效性过滤"""
-    url = f"https://www.bing.com/news/search?q={requests.utils.quote(query)}&format=rss&cc=cn&setmkt=zh-CN&sortby=date"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        feed = feedparser.parse(resp.text)
-        if not feed.entries:
-            return []
-        articles = []
-        for entry in feed.entries[:count]:
-            articles.append({
-                "title": entry.title,
-                "link": entry.link,
-                "published": entry.get("published", "")
-            })
-        return articles
-    except Exception as e:
-        print(f"抓取失败: {e}")
-        return []
+def fetch_sina_news(pages=3):
+    """获取新浪财经宏观/政策类滚动新闻（免费、无需Key、极稳定）"""
+    all_items = []
+    for page in range(1, pages+1):
+        url = f"https://feed.mix.sina.com.cn/api/roll/get?pageid=155&lid=1686&k=&num=20&page={page}&r=0.1&callback="
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            data = resp.json()
+            if data.get("result") and data["result"].get("data"):
+                for item in data["result"]["data"]:
+                    title = item.get("title", "").strip()
+                    if not title:
+                        continue
+                    link = item.get("url", "")
+                    ctime = item.get("ctime", "")
+                    all_items.append(f"[{ctime}] {title} {link}")
+            else:
+                print(f"第{page}页无数据")
+        except Exception as e:
+            print(f"抓取失败(page {page}): {e}")
+            continue
+    # 去重（按链接）
+    seen = set()
+    unique = []
+    for line in all_items:
+        if line not in seen:
+            seen.add(line)
+            unique.append(line)
+    return unique[:15]  # 最多15条
 
-# 多个宏观关键词确保覆盖面
-queries = [
-    "宏观 经济 政策",
-    "A股 利好 新闻",
-    "今日 财经 头条",
-    "央行 财政部 最新",
-    "国际 经济 形势",
-]
-
-all_articles = []
-for q in queries:
-    all_articles.extend(fetch_bing_news(q, count=5))
-
-# 去重
-seen = set()
-unique_articles = []
-for a in all_articles:
-    if a["link"] not in seen:
-        seen.add(a["link"])
-        unique_articles.append(a)
-
-# 取前15条
-selected = unique_articles[:15]
-
-# 构建邮件内容
+# 抓取新闻
+news_list = fetch_sina_news(pages=3)
+count = len(news_list)
 now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-if selected:
-    lines = [f"以下为今日宏观相关新闻，共{len(selected)}条（北京时间 {now_str}）"]
-    for i, a in enumerate(selected, 1):
-        lines.append(f"{i}. [{a['title']}]({a['link']})")
-    body = "\n".join(lines)
-    count = len(selected)
+
+if count > 0:
+    body = f"以下为今日宏观相关新闻，共{count}条（北京时间 {now_str}）\n" + "\n".join([f"{i}. {item}" for i, item in enumerate(news_list, 1)])
 else:
-    body = "今日暂无宏观新闻，请稍后重试。"
-    count = 0
+    body = "今日暂无新闻数据，请稍后重试。"
 
 # 发送邮件
 def send_email(content, count):
@@ -80,7 +63,7 @@ def send_email(content, count):
     html = f"""<html><body style="font-family:Microsoft YaHei; font-size:15px; line-height:1.8;">
 {content.replace(chr(10), '<br>')}
 <br><hr>
-<p style="color:gray; font-size:12px;">本邮件由自动化脚本生成，仅供参考。</p >
+<p style="color:gray; font-size:12px;">本邮件由自动化脚本生成，数据来源新浪财经，仅供参考。</p >
 </body></html>"""
     msg.attach(MIMEText(html, "html", "utf-8"))
     try:
@@ -93,6 +76,6 @@ def send_email(content, count):
         print(f"邮件发送失败: {e}")
 
 if __name__ == "__main__":
-    print(f"[{datetime.now()}] 开始采集宏观新闻...")
+    print(f"[{datetime.now()}] 开始采集新浪财经新闻...")
     send_email(body, count)
     print("结束。")
