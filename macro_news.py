@@ -1,69 +1,78 @@
 import requests
+import feedparser
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import os
 
-DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]
+DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]  # 保留，未使用但防止报错
 SEND_EMAIL = os.environ["SEND_EMAIL"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 RECEIVE_EMAIL = os.environ["RECEIVE_EMAIL"]
 
-def fetch_cls_news(max_count=30):
-    """抓取财联社电报，返回原始新闻列表"""
-    url = "https://www.cls.cn/api/sw?app=CailianpressWeb&os=web&sv=8.4.6"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.cls.cn/telegraph"}
-    params = {"type": "telegram", "keyword": "", "page": 0, "pageSize": max_count}
+def fetch_bing_news(query, count=15):
+    """从 Bing News RSS 获取最新新闻，不做任何时效性过滤"""
+    url = f"https://www.bing.com/news/search?q={requests.utils.quote(query)}&format=rss&cc=cn&setmkt=zh-CN&sortby=date"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
-        data = resp.json()
-        if data.get("error") == 0 and "data" in data:
-            articles = []
-            for item in data["data"]:
-                title = item.get("content", "").strip()
-                if not title:
-                    continue
-                ctime = datetime.fromtimestamp(item.get("ctime", 0)).strftime("%m-%d %H:%M")
-                link = f"https://www.cls.cn/detail/{item.get('id', '')}"
-                articles.append(f"【{ctime}】{title[:100]} {link}")
-            return articles[:max_count]
-        else:
-            print(f"财联社接口返回错误: {data}")
+        resp = requests.get(url, headers=headers, timeout=15)
+        feed = feedparser.parse(resp.text)
+        if not feed.entries:
             return []
+        articles = []
+        for entry in feed.entries[:count]:
+            articles.append({
+                "title": entry.title,
+                "link": entry.link,
+                "published": entry.get("published", "")
+            })
+        return articles
     except Exception as e:
         print(f"抓取失败: {e}")
         return []
 
-# 采集
-raw_lines = fetch_cls_news(30)
+# 多个宏观关键词确保覆盖面
+queries = [
+    "宏观 经济 政策",
+    "A股 利好 新闻",
+    "今日 财经 头条",
+    "央行 财政部 最新",
+    "国际 经济 形势",
+]
+
+all_articles = []
+for q in queries:
+    all_articles.extend(fetch_bing_news(q, count=5))
+
 # 去重
 seen = set()
-news_list = []
-for line in raw_lines:
-    if line not in seen:
-        seen.add(line)
-        news_list.append(line)
+unique_articles = []
+for a in all_articles:
+    if a["link"] not in seen:
+        seen.add(a["link"])
+        unique_articles.append(a)
 
-# 直接取前15条作为邮件内容
-top_news = news_list[:15]
+# 取前15条
+selected = unique_articles[:15]
 
-if top_news:
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    body_lines = [f"以下为财联社实时电报前15条（北京时间 {now_str}）"]
-    for i, item in enumerate(top_news, 1):
-        body_lines.append(f"{i}. {item}")
-    body = "\n".join(body_lines)
-    count = len(top_news)
+# 构建邮件内容
+now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+if selected:
+    lines = [f"以下为今日宏观相关新闻，共{len(selected)}条（北京时间 {now_str}）"]
+    for i, a in enumerate(selected, 1):
+        lines.append(f"{i}. [{a['title']}]({a['link']})")
+    body = "\n".join(lines)
+    count = len(selected)
 else:
-    body = "今日暂无电报数据，请稍后重试。"
+    body = "今日暂无宏观新闻，请稍后重试。"
     count = 0
 
 # 发送邮件
 def send_email(content, count):
     now = datetime.now()
     period = "早间" if now.hour < 11 else ("午间" if now.hour < 16 else "晚间")
-    subject = f"📰 宏观电报 {period}简报（{count}条） - {now.strftime('%m-%d %H:%M')}"
+    subject = f"📰 宏观新闻 {period}简报（{count}条） - {now.strftime('%m-%d %H:%M')}"
     msg = MIMEMultipart("alternative")
     msg["From"] = SEND_EMAIL
     msg["To"] = RECEIVE_EMAIL
@@ -71,7 +80,7 @@ def send_email(content, count):
     html = f"""<html><body style="font-family:Microsoft YaHei; font-size:15px; line-height:1.8;">
 {content.replace(chr(10), '<br>')}
 <br><hr>
-<p style="color:gray; font-size:12px;">本邮件由AI自动生成，仅供参考。</p >
+<p style="color:gray; font-size:12px;">本邮件由自动化脚本生成，仅供参考。</p >
 </body></html>"""
     msg.attach(MIMEText(html, "html", "utf-8"))
     try:
@@ -84,6 +93,6 @@ def send_email(content, count):
         print(f"邮件发送失败: {e}")
 
 if __name__ == "__main__":
-    print(f"[{datetime.now()}] 抓取财联社电报...")
+    print(f"[{datetime.now()}] 开始采集宏观新闻...")
     send_email(body, count)
     print("结束。")
